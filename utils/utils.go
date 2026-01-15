@@ -219,14 +219,57 @@ func CopyHeadersWithFilter(w http.ResponseWriter, src http.Header, exclude map[s
 	}
 }
 
-// GetProxyOrigin 自动感知 Caddy 转发后的 Host 和协议
-func GetProxyOrigin(r *http.Request) string {
+func parseTrustedProxyNets(cidrs string) []*net.IPNet {
+	var nets []*net.IPNet
+	for _, part := range strings.Split(cidrs, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(part)
+		if err != nil {
+			continue
+		}
+		nets = append(nets, ipNet)
+	}
+	if len(nets) == 0 {
+		for _, loopback := range []string{"127.0.0.1/8", "::1/128"} {
+			_, ipNet, err := net.ParseCIDR(loopback)
+			if err != nil {
+				continue
+			}
+			nets = append(nets, ipNet)
+		}
+	}
+	return nets
+}
+
+func isTrustedProxyRemoteAddr(remoteAddr string, trustedCIDRs string) bool {
+	ipStr := strings.TrimSpace(remoteAddr)
+	if host, _, err := net.SplitHostPort(ipStr); err == nil {
+		ipStr = host
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false
+	}
+	for _, n := range parseTrustedProxyNets(trustedCIDRs) {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func GetProxyOrigin(r *http.Request, trustProxy bool, trustedCIDRs string) string {
 	scheme := "http"
-	// 感知 Caddy/Nginx 转发的协议
-	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
-		scheme = proto
-	} else if r.TLS != nil {
+	if r.TLS != nil {
 		scheme = "https"
+	}
+	if trustProxy && isTrustedProxyRemoteAddr(r.RemoteAddr, trustedCIDRs) {
+		if proto := strings.TrimSpace(strings.ToLower(r.Header.Get("X-Forwarded-Proto"))); proto == "http" || proto == "https" {
+			scheme = proto
+		}
 	}
 	// r.Host 会自动获取 Host 请求头
 	return fmt.Sprintf("%s://%s", scheme, r.Host)

@@ -98,6 +98,17 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 5. 复制目标服务器的响应头
 	utils.CopyHeadersWithFilter(w, resp.Header, utils.DefaultExcludedResponseHeaders)
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		if loc := strings.TrimSpace(resp.Header.Get("Location")); loc != "" {
+			if locURL, err := url.Parse(loc); err == nil {
+				resolved := targetURL.ResolveReference(locURL)
+				if err := utils.ValidateTargetURL(resolved); err == nil {
+					proxyOrigin := utils.GetProxyOrigin(r, config.TrustProxy, config.TrustedProxyCIDRs)
+					w.Header().Set("Location", proxyOrigin+"/?url="+url.QueryEscape(resolved.String()))
+				}
+			}
+		}
+	}
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	isM3u8 := strings.HasSuffix(strings.ToLower(targetURL.Path), ".m3u8") ||
@@ -109,7 +120,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		w.Header().Del("Content-Length")
 		w.WriteHeader(resp.StatusCode)
 
-		proxyOrigin := utils.GetProxyOrigin(r)
+		proxyOrigin := utils.GetProxyOrigin(r, config.TrustProxy, config.TrustedProxyCIDRs)
 		if err := rewriteM3u8(w, resp.Body, targetURL, proxyOrigin); err != nil {
 			utils.LogError(r, fmt.Errorf("rewrite m3u8 failed: %w", err))
 		}
