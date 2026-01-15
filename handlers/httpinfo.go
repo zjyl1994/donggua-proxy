@@ -12,6 +12,11 @@ func HandleHttpInfo(w http.ResponseWriter, r *http.Request) {
 
 	// Collect headers
 	for k, v := range r.Header {
+		switch strings.ToLower(k) {
+		case "authorization", "proxy-authorization", "cookie", "set-cookie":
+			data[k] = "[REDACTED]"
+			continue
+		}
 		data[k] = strings.Join(v, ", ")
 	}
 
@@ -19,7 +24,7 @@ func HandleHttpInfo(w http.ResponseWriter, r *http.Request) {
 	data["Host"] = r.Host
 	data["RemoteAddr"] = r.RemoteAddr
 	data["Method"] = r.Method
-	data["URL"] = r.URL.String()
+	data["URL"] = r.URL.Path
 	data["Protocol"] = r.Proto
 
 	// Sort keys alphabetically

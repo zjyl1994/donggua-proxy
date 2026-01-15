@@ -29,17 +29,22 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	path := r.URL.Path
 	var targetURL string
 
 	if strings.HasPrefix(path, "/api/") {
-		// API 请求 - 代理到 api.themoviedb.org
-		// 去除 /api 前缀
-		targetURL = "https://api.themoviedb.org" + strings.Replace(path, "/api", "", 1) + r.URL.RawQuery
+		apiPath := strings.TrimPrefix(path, "/api")
 		if r.URL.RawQuery != "" {
-			targetURL = "https://api.themoviedb.org" + strings.Replace(path, "/api", "", 1) + "?" + r.URL.RawQuery
+			targetURL = "https://api.themoviedb.org" + apiPath + "?" + r.URL.RawQuery
 		} else {
-			targetURL = "https://api.themoviedb.org" + strings.Replace(path, "/api", "", 1)
+			targetURL = "https://api.themoviedb.org" + apiPath
 		}
 	} else if strings.HasPrefix(path, "/t/") {
 		// 图片请求 - 代理到 image.tmdb.org
@@ -53,7 +58,7 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequest(r.Method, targetURL, r.Body)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -75,7 +80,7 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// 复制目标服务器的响应头
-	utils.CopyHeaders(w, resp.Header)
+	utils.CopyHeadersWithFilter(w, resp.Header, utils.DefaultExcludedResponseHeaders)
 
 	// 缓存控制
 	isImage := strings.HasPrefix(path, "/t/")
@@ -92,5 +97,7 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	// 使用 BufferPool 优化 IO 复制
 	bufPtr := utils.BufferPool.Get().(*[]byte)
 	defer utils.BufferPool.Put(bufPtr)
-	io.CopyBuffer(w, resp.Body, *bufPtr)
+	if _, err := io.CopyBuffer(w, resp.Body, *bufPtr); err != nil {
+		utils.LogError(r, fmt.Errorf("copy response failed: %w", err))
+	}
 }

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/zjyl1994/donggua-proxy/config"
@@ -29,17 +34,38 @@ func main() {
 	})
 
 	fmt.Printf("DongguaTV Proxy is running on port %s\n", config.ListenAddr)
-	
+
 	// 设置限流器: 从环境变量读取配置 (默认 50/100)
 	limiter := middleware.NewIPRateLimiter(rate.Limit(config.RateLimit), config.BurstLimit)
+	limiter.EnableTrustedProxies(config.TrustProxy, config.TrustedProxyCIDRs)
 
 	server := &http.Server{
-		Addr:         config.ListenAddr,
-		Handler:      limiter.LimitMiddleware(http.DefaultServeMux),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		Addr:              config.ListenAddr,
+		Handler:           limiter.LimitMiddleware(http.DefaultServeMux),
+		ReadTimeout:       10 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		ErrorLog:          log.New(os.Stderr, "", log.LstdFlags),
 	}
-	if err := server.ListenAndServe(); err != nil {
-		panic(err)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
 	}
 }

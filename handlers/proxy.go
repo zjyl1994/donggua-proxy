@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,20 +13,6 @@ import (
 	"github.com/zjyl1994/donggua-proxy/utils"
 )
 
-var excludeHeaders = map[string]bool{
-	"access-control-allow-origin":      true,
-	"access-control-allow-methods":     true,
-	"access-control-allow-headers":     true,
-	"access-control-expose-headers":    true,
-	"access-control-max-age":           true,
-	"access-control-allow-credentials": true,
-	"content-encoding":                 true,
-	"transfer-encoding":                true,
-	"connection":                       true,
-	"keep-alive":                       true,
-	"host":                             true,
-}
-
 // ProxyHandler 处理通用代理请求
 func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	// 1. 处理 CORS 预检
@@ -35,17 +22,29 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	// 2. 参数获取与校验
-	targetURLStr := r.URL.Query().Get("url")
+	targetURLStr := strings.TrimSpace(r.URL.Query().Get("url"))
 	if targetURLStr == "" {
 		HandleHttpInfo(w, r)
+		return
+	}
+	if len(targetURLStr) > 8*1024 {
+		http.Error(w, "Invalid URL", http.StatusBadRequest)
 		return
 	}
 
 	// 3. 验证访问密码 (Bearer Token)
 	if config.AccessPassword != "" {
 		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+config.AccessPassword {
+		expected := "Bearer " + config.AccessPassword
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
 			http.Error(w, "Unauthorized", http.StatusForbidden)
 			return
 		}
@@ -53,20 +52,20 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	targetURL, err := url.Parse(targetURLStr)
 	if err != nil {
-		utils.LogError(r, fmt.Errorf("invalid url %s: %w", targetURLStr, err))
+		utils.LogError(r, fmt.Errorf("invalid url: %w", err))
 		http.Error(w, "Invalid URL", http.StatusBadRequest)
 		return
 	}
 
 	// SSRF 防护：检查目标 IP 是否为私有地址
 	if err := utils.ValidateTargetURL(targetURL); err != nil {
-		utils.LogError(r, fmt.Errorf("ssrf check failed for %s: %w", targetURLStr, err))
+		utils.LogError(r, fmt.Errorf("ssrf check failed: %w", err))
 		http.Error(w, "Forbidden URL", http.StatusForbidden)
 		return
 	}
 
 	// 4. 构建代理请求
-	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), r.Body)
+	proxyReq, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL.String(), r.Body)
 	if err != nil {
 		utils.LogError(r, fmt.Errorf("failed to create proxy request: %w", err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
@@ -85,6 +84,9 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	if accept := r.Header.Get("Accept"); accept != "" {
 		proxyReq.Header.Set("Accept", accept)
 	}
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		proxyReq.Header.Set("Content-Type", contentType)
+	}
 
 	resp, err := utils.DefaultClient.Do(proxyReq)
 	if err != nil {
@@ -95,13 +97,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// 5. 复制目标服务器的响应头
-	for k, vv := range resp.Header {
-		if !excludeHeaders[strings.ToLower(k)] {
-			for _, v := range vv {
-				w.Header().Add(k, v)
-			}
-		}
-	}
+	utils.CopyHeadersWithFilter(w, resp.Header, utils.DefaultExcludedResponseHeaders)
 
 	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
 	isM3u8 := strings.HasSuffix(strings.ToLower(targetURL.Path), ".m3u8") ||
@@ -114,21 +110,30 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 
 		proxyOrigin := utils.GetProxyOrigin(r)
-		rewriteM3u8(w, resp.Body, targetURL, proxyOrigin)
+		if err := rewriteM3u8(w, resp.Body, targetURL, proxyOrigin); err != nil {
+			utils.LogError(r, fmt.Errorf("rewrite m3u8 failed: %w", err))
+		}
 	} else {
 		w.WriteHeader(resp.StatusCode)
-		
+
 		// 使用 BufferPool 优化 IO 复制
 		bufPtr := utils.BufferPool.Get().(*[]byte)
 		defer utils.BufferPool.Put(bufPtr)
-		io.CopyBuffer(w, resp.Body, *bufPtr)
+		if _, err := io.CopyBuffer(w, resp.Body, *bufPtr); err != nil {
+			utils.LogError(r, fmt.Errorf("copy response failed: %w", err))
+		}
 	}
 }
 
 // rewriteM3u8 实现流式重写，减少内存压力
-func rewriteM3u8(w io.Writer, body io.Reader, baseURL *url.URL, proxyOrigin string) {
+func rewriteM3u8(w io.Writer, body io.Reader, baseURL *url.URL, proxyOrigin string) error {
 	scanner := bufio.NewScanner(body)
-	basePath := baseURL.Path[:strings.LastIndex(baseURL.Path, "/")+1]
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	basePath := "/"
+	if idx := strings.LastIndex(baseURL.Path, "/"); idx >= 0 {
+		basePath = baseURL.Path[:idx+1]
+	}
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -152,6 +157,10 @@ func rewriteM3u8(w io.Writer, body io.Reader, baseURL *url.URL, proxyOrigin stri
 			fmt.Fprintf(w, "%s/?url=%s\n", proxyOrigin, url.QueryEscape(absolute))
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func rewriteTagURIs(line string, baseURL *url.URL, proxyOrigin, basePath string) string {

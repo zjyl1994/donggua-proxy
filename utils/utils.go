@@ -8,12 +8,31 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 var (
+	DefaultExcludedResponseHeaders = map[string]bool{
+		"access-control-allow-origin":      true,
+		"access-control-allow-methods":     true,
+		"access-control-allow-headers":     true,
+		"access-control-expose-headers":    true,
+		"access-control-max-age":           true,
+		"access-control-allow-credentials": true,
+		"content-encoding":                 true,
+		"transfer-encoding":                true,
+		"connection":                       true,
+		"keep-alive":                       true,
+		"proxy-connection":                 true,
+		"te":                               true,
+		"trailer":                          true,
+		"upgrade":                          true,
+		"host":                             true,
+	}
+
 	// DefaultClient 全局复用的 HTTP 客户端，针对高并发场景优化
 	DefaultClient = &http.Client{
 		Transport: &http.Transport{
@@ -22,8 +41,10 @@ var (
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          1000,
 			MaxIdleConnsPerHost:   100,
+			MaxConnsPerHost:       200,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 		Timeout: 30 * time.Second,
@@ -49,6 +70,13 @@ type dnsCacheEntry struct {
 
 // lookupIPSafe 解析 IP，带缓存和 SSRF 检查
 func lookupIPSafe(host string) ([]net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		if IsPrivateIP(ip) {
+			return nil, fmt.Errorf("SSRF detected: %s is private IP", host)
+		}
+		return []net.IP{ip}, nil
+	}
+
 	// 1. 检查缓存
 	if val, ok := dnsCache.Load(host); ok {
 		entry := val.(dnsCacheEntry)
@@ -122,14 +150,29 @@ func GetEnv(key, fallback string) string {
 	return fallback
 }
 
+func GetEnvBool(key string, fallback bool) bool {
+	valueStr := strings.TrimSpace(strings.ToLower(GetEnv(key, "")))
+	if valueStr == "" {
+		return fallback
+	}
+	switch valueStr {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	case "0", "false", "f", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
 // GetEnvInt 获取环境变量并转换为 int，如果转换失败则返回默认值
 func GetEnvInt(key string, fallback int) int {
 	valueStr := GetEnv(key, "")
 	if valueStr == "" {
 		return fallback
 	}
-	var value int
-	if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
+	value, err := strconv.Atoi(valueStr)
+	if err != nil {
 		return fallback
 	}
 	return value
@@ -214,9 +257,18 @@ func IsPrivateIP(ip net.IP) bool {
 // ValidateTargetURL 验证目标 URL 的 Scheme
 // 注意：DNS 解析和私有 IP 检查已移动到 SafeDialContext 中
 func ValidateTargetURL(targetURL *url.URL) error {
+	if targetURL == nil {
+		return fmt.Errorf("nil url")
+	}
 	scheme := strings.ToLower(targetURL.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("unsupported scheme: %s", scheme)
+	}
+	if targetURL.Host == "" {
+		return fmt.Errorf("missing host")
+	}
+	if targetURL.User != nil {
+		return fmt.Errorf("userinfo not allowed")
 	}
 	return nil
 }

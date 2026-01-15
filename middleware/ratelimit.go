@@ -17,6 +17,9 @@ type IPRateLimiter struct {
 	mu       sync.Mutex
 	r        rate.Limit
 	b        int
+
+	trustProxy  bool
+	trustedNets []*net.IPNet
 }
 
 // NewIPRateLimiter creates a new IPRateLimiter
@@ -66,6 +69,75 @@ func (i *IPRateLimiter) GetLimiter(ip string) *rate.Limiter {
 	return limiter
 }
 
+func (i *IPRateLimiter) EnableTrustedProxies(trustProxy bool, cidrs string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	i.trustProxy = trustProxy
+	if !trustProxy {
+		i.trustedNets = nil
+		return
+	}
+
+	var nets []*net.IPNet
+	for _, part := range strings.Split(cidrs, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(part)
+		if err != nil {
+			continue
+		}
+		nets = append(nets, ipNet)
+	}
+	if len(nets) == 0 {
+		for _, loopback := range []string{"127.0.0.1/8", "::1/128"} {
+			_, ipNet, err := net.ParseCIDR(loopback)
+			if err != nil {
+				continue
+			}
+			nets = append(nets, ipNet)
+		}
+	}
+	i.trustedNets = nets
+}
+
+func (i *IPRateLimiter) isTrustedProxy(remoteIP net.IP) bool {
+	if remoteIP == nil {
+		return false
+	}
+	i.mu.Lock()
+	trustProxy := i.trustProxy
+	nets := i.trustedNets
+	i.mu.Unlock()
+
+	if !trustProxy || len(nets) == 0 {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(remoteIP) {
+			return true
+		}
+	}
+	return false
+}
+
+func extractClientIP(r *http.Request, fallback string) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		if ip := net.ParseIP(first); ip != nil {
+			return ip.String()
+		}
+	}
+	if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+		if ip := net.ParseIP(xrip); ip != nil {
+			return ip.String()
+		}
+	}
+	return fallback
+}
+
 // cleanupLoop removes old entries to prevent memory leaks
 func (i *IPRateLimiter) cleanupLoop() {
 	for {
@@ -84,21 +156,21 @@ func (i *IPRateLimiter) cleanupLoop() {
 // LimitMiddleware wraps an http.Handler with rate limiting
 func (i *IPRateLimiter) LimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
+		ipStr, _, err := net.SplitHostPort(r.RemoteAddr)
 		if err != nil {
 			// If RemoteAddr doesn't have a port (e.g. some test environments), use it as is
-			ip = r.RemoteAddr
-			if strings.Contains(ip, ":") && !strings.Contains(ip, "[") { // ipv4:port format but SplitHostPort failed? unlikely, but safety check
+			ipStr = r.RemoteAddr
+			if strings.Contains(ipStr, ":") && !strings.Contains(ipStr, "[") { // ipv4:port format but SplitHostPort failed? unlikely, but safety check
 				// handle weird cases or just fallback to full string
 			}
 		}
-		
-		// Handle X-Forwarded-For if behind a proxy (optional, but good for public proxy)
-		// WARNING: Only trust this if you trust the upstream proxy. 
-		// For a general public proxy code, it's safer to rely on RemoteAddr unless configured otherwise.
-		// We will stick to RemoteAddr for security unless explicitly asked to support reverse proxies.
 
-		limiter := i.GetLimiter(ip)
+		remoteIP := net.ParseIP(strings.TrimSpace(ipStr))
+		if i.isTrustedProxy(remoteIP) {
+			ipStr = extractClientIP(r, ipStr)
+		}
+
+		limiter := i.GetLimiter(ipStr)
 		if !limiter.Allow() {
 			http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 			return

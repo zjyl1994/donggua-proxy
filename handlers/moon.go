@@ -30,6 +30,11 @@ type DongguaSub struct {
 
 // Moon2DongguaHandler 处理 MoonSub 到 DongguaSub 的转换
 func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
 	moonUrl := r.URL.Query().Get("url")
 	if moonUrl == "" {
 		http.Error(w, "Missing 'url' parameter", http.StatusBadRequest)
@@ -49,7 +54,14 @@ func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := utils.DefaultClient.Get(moonUrl)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, moonUrl, nil)
+	if err != nil {
+		utils.LogError(r, fmt.Errorf("failed to create request: %w", err))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	resp, err := utils.DefaultClient.Do(req)
 	if err != nil {
 		utils.LogError(r, fmt.Errorf("failed to fetch moon sub: %w", err))
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
