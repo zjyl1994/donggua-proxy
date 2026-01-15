@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -67,7 +68,8 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := utils.DefaultClient.Do(req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		utils.LogError(r, fmt.Errorf("tmdb request failed: %w", err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -86,7 +88,7 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	
+
 	// 使用 BufferPool 优化 IO 复制
 	bufPtr := utils.BufferPool.Get().(*[]byte)
 	defer utils.BufferPool.Put(bufPtr)

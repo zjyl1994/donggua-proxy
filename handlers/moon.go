@@ -3,7 +3,9 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/zjyl1994/donggua-proxy/utils"
 )
@@ -34,21 +36,40 @@ func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	targetURL, err := url.Parse(moonUrl)
+	if err != nil {
+		utils.LogError(r, fmt.Errorf("invalid url %s: %w", moonUrl, err))
+		http.Error(w, "Invalid URL", http.StatusBadRequest)
+		return
+	}
+
+	if err := utils.ValidateTargetURL(targetURL); err != nil {
+		utils.LogError(r, fmt.Errorf("ssrf check failed for %s: %w", moonUrl, err))
+		http.Error(w, "Forbidden URL", http.StatusForbidden)
+		return
+	}
+
 	resp, err := utils.DefaultClient.Get(moonUrl)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error fetching URL: %s", err), http.StatusInternalServerError)
+		utils.LogError(r, fmt.Errorf("failed to fetch moon sub: %w", err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		http.Error(w, fmt.Sprintf("Error: remote server returned %d", resp.StatusCode), http.StatusInternalServerError)
+		utils.LogError(r, fmt.Errorf("remote server returned %d", resp.StatusCode))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 
+	// 限制读取最大 1MB 防止内存耗尽
+	limitedReader := io.LimitReader(resp.Body, 1*1024*1024)
+
 	var moonSub MoonSub
-	if err := json.NewDecoder(resp.Body).Decode(&moonSub); err != nil {
-		http.Error(w, fmt.Sprintf("Error decoding JSON: %s", err), http.StatusInternalServerError)
+	if err := json.NewDecoder(limitedReader).Decode(&moonSub); err != nil {
+		utils.LogError(r, fmt.Errorf("error decoding JSON: %w", err))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
@@ -64,6 +85,7 @@ func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(dongguaSub); err != nil {
-		http.Error(w, fmt.Sprintf("Error encoding response: %s", err), http.StatusInternalServerError)
+		utils.LogError(r, fmt.Errorf("failed to encode response: %w", err))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 	}
 }

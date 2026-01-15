@@ -7,6 +7,8 @@ import (
 
 	"github.com/zjyl1994/donggua-proxy/config"
 	"github.com/zjyl1994/donggua-proxy/handlers"
+	"github.com/zjyl1994/donggua-proxy/middleware"
+	"golang.org/x/time/rate"
 )
 
 func main() {
@@ -27,8 +29,13 @@ func main() {
 	})
 
 	fmt.Printf("DongguaTV Proxy is running on port %s\n", config.ListenAddr)
+	
+	// 设置限流器: 从环境变量读取配置 (默认 50/100)
+	limiter := middleware.NewIPRateLimiter(rate.Limit(config.RateLimit), config.BurstLimit)
+
 	server := &http.Server{
 		Addr:         config.ListenAddr,
+		Handler:      limiter.LimitMiddleware(http.DefaultServeMux),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}

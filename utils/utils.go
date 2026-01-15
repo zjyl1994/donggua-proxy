@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,14 +17,11 @@ var (
 	// DefaultClient 全局复用的 HTTP 客户端，针对高并发场景优化
 	DefaultClient = &http.Client{
 		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           SafeDialContext,
 			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          1000, // 增加最大空闲连接数
-			MaxIdleConnsPerHost:   100,  // 增加每个 Host 的最大空闲连接数（关键优化）
+			MaxIdleConns:          1000,
+			MaxIdleConnsPerHost:   100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
@@ -38,7 +37,82 @@ var (
 			return &b
 		},
 	}
+
+	// DNS 缓存
+	dnsCache = sync.Map{}
 )
+
+type dnsCacheEntry struct {
+	ips    []net.IP
+	expiry time.Time
+}
+
+// lookupIPSafe 解析 IP，带缓存和 SSRF 检查
+func lookupIPSafe(host string) ([]net.IP, error) {
+	// 1. 检查缓存
+	if val, ok := dnsCache.Load(host); ok {
+		entry := val.(dnsCacheEntry)
+		if time.Now().Before(entry.expiry) {
+			return entry.ips, nil
+		}
+		dnsCache.Delete(host)
+	}
+
+	// 2. DNS 解析
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. SSRF 检查
+	for _, ip := range ips {
+		if IsPrivateIP(ip) {
+			return nil, fmt.Errorf("SSRF detected: %s resolves to private IP %s", host, ip.String())
+		}
+	}
+
+	// 4. 写入缓存 (TTL 5分钟)
+	dnsCache.Store(host, dnsCacheEntry{
+		ips:    ips,
+		expiry: time.Now().Add(5 * time.Minute),
+	})
+
+	return ips, nil
+}
+
+// SafeDialContext 安全的 DialContext，包含 DNS 缓存和 SSRF 检查
+func SafeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	ips, err := lookupIPSafe(host)
+	if err != nil {
+		return nil, err
+	}
+
+	// 尝试连接解析出的 IP
+	var lastErr error
+	for _, ip := range ips {
+		// 构造 TCP 地址
+		targetAddr := net.JoinHostPort(ip.String(), port)
+		conn, err := (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext(ctx, network, targetAddr)
+
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no IP addresses found for %s", host)
+}
 
 // GetEnv 获取环境变量
 func GetEnv(key, fallback string) string {
@@ -46,6 +120,19 @@ func GetEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// GetEnvInt 获取环境变量并转换为 int，如果转换失败则返回默认值
+func GetEnvInt(key string, fallback int) int {
+	valueStr := GetEnv(key, "")
+	if valueStr == "" {
+		return fallback
+	}
+	var value int
+	if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
+		return fallback
+	}
+	return value
 }
 
 // SetCORSHeaders 统一设置 CORS
@@ -114,4 +201,27 @@ func ResolveURL(u string, baseURL *url.URL, basePath string) string {
 		return baseURL.Scheme + "://" + baseURL.Host + u
 	}
 	return baseURL.Scheme + "://" + baseURL.Host + basePath + u
+}
+
+// IsPrivateIP 检查 IP 是否为私有地址或回环地址
+func IsPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+	return false
+}
+
+// ValidateTargetURL 验证目标 URL 的 Scheme
+// 注意：DNS 解析和私有 IP 检查已移动到 SafeDialContext 中
+func ValidateTargetURL(targetURL *url.URL) error {
+	scheme := strings.ToLower(targetURL.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s", scheme)
+	}
+	return nil
+}
+
+// LogError 记录错误日志
+func LogError(r *http.Request, err error) {
+	log.Printf("[ERROR] %s %s: %v", r.Method, r.URL.Path, err)
 }

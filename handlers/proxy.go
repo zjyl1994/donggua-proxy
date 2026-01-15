@@ -53,13 +53,22 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	targetURL, err := url.Parse(targetURLStr)
 	if err != nil {
+		utils.LogError(r, fmt.Errorf("invalid url %s: %w", targetURLStr, err))
 		http.Error(w, "Invalid URL", http.StatusBadRequest)
+		return
+	}
+
+	// SSRF 防护：检查目标 IP 是否为私有地址
+	if err := utils.ValidateTargetURL(targetURL); err != nil {
+		utils.LogError(r, fmt.Errorf("ssrf check failed for %s: %w", targetURLStr, err))
+		http.Error(w, "Forbidden URL", http.StatusForbidden)
 		return
 	}
 
 	// 4. 构建代理请求
 	proxyReq, err := http.NewRequest(r.Method, targetURL.String(), r.Body)
 	if err != nil {
+		utils.LogError(r, fmt.Errorf("failed to create proxy request: %w", err))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -79,7 +88,8 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := utils.DefaultClient.Do(proxyReq)
 	if err != nil {
-		http.Error(w, "Proxy Error: "+err.Error(), http.StatusBadGateway)
+		utils.LogError(r, fmt.Errorf("proxy request failed: %w", err))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
