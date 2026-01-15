@@ -32,7 +32,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	// 2. 参数获取与校验
 	targetURLStr := strings.TrimSpace(r.URL.Query().Get("url"))
 	if targetURLStr == "" {
-		HandleHttpInfo(w, r)
+		io.WriteString(w, "Donggua-Proxy")
 		return
 	}
 	if len(targetURLStr) > 8*1024 {
@@ -58,7 +58,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SSRF 防护：检查目标 IP 是否为私有地址
-	if err := utils.ValidateTargetURL(targetURL); err != nil {
+	if err = utils.ValidateTargetURL(targetURL); err != nil {
 		utils.LogError(r, fmt.Errorf("ssrf check failed: %w", err))
 		http.Error(w, "Forbidden URL", http.StatusForbidden)
 		return

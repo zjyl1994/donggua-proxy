@@ -48,7 +48,7 @@ func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := utils.ValidateTargetURL(targetURL); err != nil {
+	if err = utils.ValidateTargetURL(targetURL); err != nil {
 		utils.LogError(r, fmt.Errorf("ssrf check failed for %s: %w", moonUrl, err))
 		http.Error(w, "Forbidden URL", http.StatusForbidden)
 		return
