@@ -18,8 +18,8 @@ import (
 
 func main() {
 	// TMDB 代理路由
-	http.HandleFunc("/api/", handlers.TmdbHandler)
-	http.HandleFunc("/t/", handlers.TmdbHandler)
+	http.HandleFunc("/api/", handlers.TmdbAPIHandler)
+	http.HandleFunc("/t/", handlers.TmdbImageHandler)
 
 	// Moon2Donggua 转换路由
 	http.HandleFunc("/sub/moon2donggua", handlers.Moon2DongguaHandler)

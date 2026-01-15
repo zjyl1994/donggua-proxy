@@ -23,8 +23,7 @@ func HandleTMDBUsage(w http.ResponseWriter) {
 	})
 }
 
-// TmdbHandler 处理 TMDB 请求
-func TmdbHandler(w http.ResponseWriter, r *http.Request) {
+func TmdbAPIHandler(w http.ResponseWriter, r *http.Request) {
 	if utils.HandleCORS(w, r) {
 		return
 	}
@@ -37,34 +36,53 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
-	var targetURL string
+	if path == "/api" || path == "/api/" {
+		HandleTMDBUsage(w)
+		return
+	}
 
-	if strings.HasPrefix(path, "/api/") {
-		apiPath := strings.TrimPrefix(path, "/api")
-		if r.URL.RawQuery != "" {
-			targetURL = "https://api.themoviedb.org" + apiPath + "?" + r.URL.RawQuery
-		} else {
-			targetURL = "https://api.themoviedb.org" + apiPath
-		}
-	} else if strings.HasPrefix(path, "/t/") {
-		// 图片请求 - 代理到 image.tmdb.org
-		if r.URL.RawQuery != "" {
-			targetURL = "https://image.tmdb.org" + path + "?" + r.URL.RawQuery
-		} else {
-			targetURL = "https://image.tmdb.org" + path
-		}
-	} else {
+	apiPath := strings.TrimPrefix(path, "/api")
+	targetURL := "https://api.themoviedb.org" + apiPath
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	proxyTMDB(w, r, targetURL, false)
+}
+
+func TmdbImageHandler(w http.ResponseWriter, r *http.Request) {
+	if utils.HandleCORS(w, r) {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet, http.MethodHead:
+	default:
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := r.URL.Path
+	if path == "/t" || path == "/t/" {
 		http.NotFound(w, r)
 		return
 	}
 
+	targetURL := "https://image.tmdb.org" + path
+	if r.URL.RawQuery != "" {
+		targetURL += "?" + r.URL.RawQuery
+	}
+
+	proxyTMDB(w, r, targetURL, true)
+}
+
+func proxyTMDB(w http.ResponseWriter, r *http.Request, targetURL string, isImage bool) {
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// 设置伪装头信息
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Accept", r.Header.Get("Accept"))
 	if req.Header.Get("Accept") == "" {
@@ -79,11 +97,8 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// 复制目标服务器的响应头
 	utils.CopyHeadersWithFilter(w, resp.Header, utils.DefaultExcludedResponseHeaders)
 
-	// 缓存控制
-	isImage := strings.HasPrefix(path, "/t/")
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		if isImage {
 			w.Header().Set("Cache-Control", "public, max-age=604800") // 7天
