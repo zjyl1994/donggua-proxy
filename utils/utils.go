@@ -2,16 +2,43 @@ package utils
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-var DefaultClient = &http.Client{
-	Timeout: 30 * time.Second,
-}
+var (
+	// DefaultClient 全局复用的 HTTP 客户端，针对高并发场景优化
+	DefaultClient = &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          1000, // 增加最大空闲连接数
+			MaxIdleConnsPerHost:   100,  // 增加每个 Host 的最大空闲连接数（关键优化）
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		Timeout: 30 * time.Second,
+	}
+
+	// BufferPool 复用 IO 缓冲区，减少 GC 压力
+	BufferPool = sync.Pool{
+		New: func() interface{} {
+			// 32KB buffer，与 io.Copy 默认一致
+			b := make([]byte, 32*1024)
+			return &b
+		},
+	}
+)
 
 // GetEnv 获取环境变量
 func GetEnv(key, fallback string) string {

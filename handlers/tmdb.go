@@ -86,5 +86,9 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	
+	// 使用 BufferPool 优化 IO 复制
+	bufPtr := utils.BufferPool.Get().(*[]byte)
+	defer utils.BufferPool.Put(bufPtr)
+	io.CopyBuffer(w, resp.Body, *bufPtr)
 }

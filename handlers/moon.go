@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 
 	"github.com/zjyl1994/donggua-proxy/utils"
@@ -47,15 +46,9 @@ func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Error reading body: %s", err), http.StatusInternalServerError)
-		return
-	}
-
 	var moonSub MoonSub
-	if err := json.Unmarshal(body, &moonSub); err != nil {
-		http.Error(w, fmt.Sprintf("Error unmarshaling JSON: %s", err), http.StatusInternalServerError)
+	if err := json.NewDecoder(resp.Body).Decode(&moonSub); err != nil {
+		http.Error(w, fmt.Sprintf("Error decoding JSON: %s", err), http.StatusInternalServerError)
 		return
 	}
 
