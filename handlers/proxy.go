@@ -7,10 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
-	"donggua-proxy/config"
-	"donggua-proxy/utils"
+	"github.com/zjyl1994/donggua-proxy/config"
+	"github.com/zjyl1994/donggua-proxy/utils"
 )
 
 var excludeHeaders = map[string]bool{
@@ -78,8 +77,7 @@ func ProxyHandler(w http.ResponseWriter, r *http.Request) {
 		proxyReq.Header.Set("Accept", accept)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(proxyReq)
+	resp, err := utils.DefaultClient.Do(proxyReq)
 	if err != nil {
 		http.Error(w, "Proxy Error: "+err.Error(), http.StatusBadGateway)
 		return

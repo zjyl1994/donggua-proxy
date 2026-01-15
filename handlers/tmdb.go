@@ -5,9 +5,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
-	"donggua-proxy/utils"
+	"github.com/zjyl1994/donggua-proxy/utils"
 )
 
 // HandleTMDBUsage 返回 TMDB 使用说明
@@ -25,9 +24,7 @@ func HandleTMDBUsage(w http.ResponseWriter) {
 
 // TmdbHandler 处理 TMDB 请求
 func TmdbHandler(w http.ResponseWriter, r *http.Request) {
-	utils.SetCORSHeaders(w)
-	if r.Method == http.MethodOptions {
-		w.WriteHeader(http.StatusNoContent)
+	if utils.HandleCORS(w, r) {
 		return
 	}
 
@@ -68,8 +65,7 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 		req.Header.Set("Accept", "*/*")
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := utils.DefaultClient.Do(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -77,11 +73,7 @@ func TmdbHandler(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// 复制目标服务器的响应头
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
+	utils.CopyHeaders(w, resp.Header)
 
 	// 缓存控制
 	isImage := strings.HasPrefix(path, "/t/")

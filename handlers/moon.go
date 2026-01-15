@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+
+	"github.com/zjyl1994/donggua-proxy/utils"
 )
 
 type MoonSub struct {
@@ -34,8 +35,7 @@ func Moon2DongguaHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(moonUrl)
+	resp, err := utils.DefaultClient.Get(moonUrl)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error fetching URL: %s", err), http.StatusInternalServerError)
 		return

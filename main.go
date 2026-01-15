@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"time"
 
-	"donggua-proxy/config"
-	"donggua-proxy/handlers"
+	"github.com/zjyl1994/donggua-proxy/config"
+	"github.com/zjyl1994/donggua-proxy/handlers"
 )
 
 func main() {
