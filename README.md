@@ -5,10 +5,13 @@ Go 实现的多合一 DongguaTV 代理
 
 # 使用
 在DongguaTV实例的环境变量中设置 TMDB_PROXY_URL 和 CORS_PROXY_URL 指向部署的实例即可。
+服务也携带了一个简易的MoonTV订阅转DongguaTV订阅功能
+
 (替换proxy.example.com为你部署的实例地址)
 ```
 TMDB_PROXY_URL=http://proxy.example.com
 CORS_PROXY_URL=http://proxy.example.com
+REMOTE_DB_URL=http://proxy.example.com/sub/moon2donggua?url=[MoonTV订阅URL]
 ```
 
 # 配置
